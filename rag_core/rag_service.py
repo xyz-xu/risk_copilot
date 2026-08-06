@@ -3,6 +3,7 @@ from typing import Tuple,List
 from rag_core.rag_constants import *
 import torch
 from pymilvus import AnnSearchRequest, WeightedRanker
+from rag_core.graph_rag import text_chunk_proc, graph_adj_matrix
 
 def rag_query(
         query: str,
@@ -170,5 +171,68 @@ def hybrid_search(
     ranked_docs = sorted(zip(scores, results), reverse=True)
     ranked_docs = ranked_docs[:reranker_limit]
     
+    llm_friendly_docs = _sort_docs_for_llm(ranked_docs)
+    return llm_friendly_docs
+
+def graph_query(query: str):
+    query = "What contribution did the son of Euler's teacher make?"
+
+    # 使用大模型提取出query中的实体
+    query_ner_list = ["Euler"]
+
+    client = get_milvus_client()
+    embedding_model = get_embedding_model()
+
+    query_ner_embeddings = [
+        embedding_model.embed_query(query_ner) for query_ner in query_ner_list
+    ]
+    top_k = 3
+
+    entity_search_res = client.search(
+        collection_name=text_chunk_proc.entity_col_name,
+        data=query_ner_embeddings,
+        limit=top_k,
+        output_fields=["id"],
+    )
+
+    query_embedding = embedding_model.embed_query(query)
+
+    relation_search_res = client.search(
+        collection_name=text_chunk_proc.relation_col_name,
+        data=[query_embedding],
+        limit=top_k,
+        output_fields=["id"],   
+    )[0]
+
+    filtered_hit_relation_ids = [
+        relation_res["entity"]["id"]
+        for relation_res in relation_search_res
+        # if relation_res['distance'] > relation_sim_filter_thresh
+    ]
+
+    filtered_hit_entity_ids = [
+        one_entity_res["entity"]["id"]
+        for one_entity_search_res in entity_search_res
+        for one_entity_res in one_entity_search_res
+        # if one_entity_res['distance'] > entity_sim_filter_thresh
+    ]
+
+    # [{id:0,text"xxx"}]
+    relation_candidates = graph_adj_matrix.expand_relations_by_hit(filtered_hit_relation_ids, filtered_hit_entity_ids)
+    relation_ids = [r["id"] for r in relation_candidates]
+
+    passages_candidates = graph_adj_matrix.get_passages_by_relatioin_ids(relation_ids)
+    pairs = [[query, doc["text"]] for doc in passages_candidates]
+    
+    # ranker
+    tokenizer = get_reanker_tokenizer()
+    reranker_model = get_reranker_model()
+    with torch.no_grad():
+        inputs = tokenizer(pairs, padding=True, truncation=True, return_tensors='pt', max_length=512)
+        scores = reranker_model(**inputs, return_dict=True).logits.view(-1, ).float()
+        
+    ranked_docs = sorted(zip(scores, passages_candidates), reverse=True)
+    ranked_docs = ranked_docs[:reranker_limit]
+        
     llm_friendly_docs = _sort_docs_for_llm(ranked_docs)
     return llm_friendly_docs

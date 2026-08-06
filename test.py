@@ -46,5 +46,21 @@ def test4():
     content = "\n".join(f"- 评分：{score}，内容：{doc["entity"]["text"]}" for score, doc in llm_friendly_docs)
     print(content)
 
+def test5():
+    from rag_core.graph_rag import text_chunk_proc
+    text_chunk_proc.run()
 
-test4()
+def test6():
+    from rag_core.graph_rag import text_persist
+    a = text_persist.load(text_persist.type_relationid_2_passageids)
+    print(a)
+
+def test7():
+    from rag_core.graph_rag import  graph_adj_matrix
+    graph_adj_matrix.load_adj()
+
+def test8():
+    from rag_core import rag_service
+    rag_service.graph_query("")
+
+test8()
